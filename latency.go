@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"net/http"
+	"encoding/json"
 
 	"github.com/codahale/hdrhistogram"
 	"github.com/nats-io/go-nats"
@@ -33,6 +35,7 @@ var (
 	TLSca         string
 	TLSkey        string
 	TLScert       string
+	Port          string
 )
 
 var usageStr = `
@@ -49,6 +52,7 @@ Test Options:
     -tls_ca <string> TLS Certificate CA file
     -tls_key <file>  TLS Private Key
     -tls_cert <file> TLS Certificate
+    -port <int>      API port (default: 9080)
 `
 
 func usage() {
@@ -105,6 +109,7 @@ func main() {
 	flag.StringVar(&TLSkey, "tls_key", "", "Private key file")
 	flag.StringVar(&TLScert, "tls_cert", "", "Certificate file")
 	flag.StringVar(&TLSca, "tls_ca", "", "Certificate CA file")
+	flag.StringVar(&Port, "port", "9080", "API Port")
 
 	log.SetFlags(0)
 	flag.Usage = usage
@@ -149,6 +154,13 @@ func main() {
 
 	// Duration tracking
 	durations := make([]time.Duration, 0, NumPubs)
+	latestDurations := make([]time.Duration, 0, NumPubs)
+
+	// Lock mechanism for latestDurations
+	var mutex = &sync.Mutex{}
+
+	// variable for dynamic metrics
+	var lastMetrics = make(map[string]float64)
 
 	// Wait for all messages to be received.
 	var wg sync.WaitGroup
@@ -164,6 +176,9 @@ func main() {
 	c2.Subscribe(subject, func(msg *nats.Msg) {
 		sendTime := int64(binary.LittleEndian.Uint64(msg.Data))
 		durations = append(durations, time.Duration(time.Now().UnixNano()-sendTime))
+		mutex.Lock()
+		latestDurations = append(latestDurations, time.Duration(time.Now().UnixNano()-sendTime))
+		mutex.Unlock()
 		received++
 		if received >= NumPubs {
 			wg.Done()
@@ -184,6 +199,49 @@ func main() {
 	// Random payload
 	data := make([]byte, MsgSize)
 	io.ReadFull(rand.Reader, data)
+
+	// fixed percentiles values
+	percentiles := []float64{10, 50, 75, 90, 99, 99.99, 99.999, 99.9999, 99.99999, 100.0}
+
+	// Set ticker to print histogram dynamically
+	ticker := time.NewTicker(2000 * time.Millisecond)
+	stop := make(chan bool, 1)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				mutex.Lock()
+				sort.Slice(latestDurations, func(i, j int) bool { return latestDurations[i] < latestDurations[j] })
+
+				if len(latestDurations) == 0 {
+					continue
+				}
+
+				h := hdrhistogram.New(1, int64(latestDurations[len(latestDurations)-1]), 5)
+				for _, d := range latestDurations {
+					h.RecordValue(int64(d))
+				}
+
+				avg_latency := averageLatency(latestDurations)
+				latestDurations = make([]time.Duration, 0, NumPubs)
+				mutex.Unlock()
+
+				lastMetrics["AverageLatency"] = avg_latency
+				log.Printf("HDR Percentiles:\n")
+
+				for _, percentile := range percentiles {
+					lastMetrics["Percentile" + fmt.Sprintf("%.4f", percentile)] = float64(time.Duration(h.ValueAtQuantile(percentile)).Nanoseconds())/1000.0
+					log.Printf("%.4f:       %v\n", percentile, fmtDur(time.Duration(h.ValueAtQuantile(percentile))))
+				}
+				log.Printf("AverageLatency: %v\n\n", avg_latency)
+				log.Println("==============================")
+
+			case <-stop:
+				log.Println("EXIT")
+				return
+			}
+		}
+	}()
 
 	// For publish throttling
 	delay := time.Second / time.Duration(TargetPubRate)
@@ -207,59 +265,66 @@ func main() {
 		time.Sleep(delay)
 	}
 
-	// Now publish
-	for i := 0; i < NumPubs; i++ {
-		now := time.Now()
-		// Place the send time in the front of the payload.
-		binary.LittleEndian.PutUint64(data[0:], uint64(now.UnixNano()))
-		c1.Publish(subject, data)
-		adjustAndSleep(i + 1)
-	}
-	pubDur := time.Since(pubStart)
-	wg.Wait()
-	subDur := time.Since(pubStart)
-
-	// If we are writing to files, save the original unsorted data
-	if HistFile != "" {
-		if err := writeRawFile(HistFile+".raw", durations); err != nil {
-			log.Printf("Unable to write raw output file: %v", err)
+	go func() {
+		// Now publish
+		for i := 0; i < NumPubs; i++ {
+			now := time.Now()
+			// Place the send time in the front of the payload.
+			binary.LittleEndian.PutUint64(data[0:], uint64(now.UnixNano()))
+			c1.Publish(subject, data)
+			adjustAndSleep(i + 1)
 		}
-	}
+		pubDur := time.Since(pubStart)
+		wg.Wait()
+		subDur := time.Since(pubStart)
+		ticker.Stop()
+		stop <- true
+		time.Sleep(1000 * time.Millisecond)
 
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+		// If we are writing to files, save the original unsorted data
+		if HistFile != "" {
+			if err := writeRawFile(HistFile+".raw", durations); err != nil {
+				log.Printf("Unable to write raw output file: %v", err)
+			}
+		}
 
-	h := hdrhistogram.New(1, int64(durations[len(durations)-1]), 5)
-	for _, d := range durations {
-		h.RecordValue(int64(d))
-	}
+		sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 
-	log.Printf("HDR Percentiles:\n")
-	log.Printf("10:       %v\n", fmtDur(time.Duration(h.ValueAtQuantile(10))))
-	log.Printf("50:       %v\n", fmtDur(time.Duration(h.ValueAtQuantile(50))))
-	log.Printf("75:       %v\n", fmtDur(time.Duration(h.ValueAtQuantile(75))))
-	log.Printf("90:       %v\n", fmtDur(time.Duration(h.ValueAtQuantile(90))))
-	log.Printf("99:       %v\n", fmtDur(time.Duration(h.ValueAtQuantile(99))))
-	log.Printf("99.99:    %v\n", fmtDur(time.Duration(h.ValueAtQuantile(99.99))))
-	log.Printf("99.999:   %v\n", fmtDur(time.Duration(h.ValueAtQuantile(99.999))))
-	log.Printf("99.9999:  %v\n", fmtDur(time.Duration(h.ValueAtQuantile(99.9999))))
-	log.Printf("99.99999: %v\n", fmtDur(time.Duration(h.ValueAtQuantile(99.99999))))
-	log.Printf("100:      %v\n", fmtDur(time.Duration(h.ValueAtQuantile(100.0))))
-	log.Println("==============================")
+		h := hdrhistogram.New(1, int64(durations[len(durations)-1]), 5)
+		for _, d := range durations {
+			h.RecordValue(int64(d))
+		}
 
-	if HistFile != "" {
-		pctls := histwriter.Percentiles{10, 25, 50, 75, 90, 99, 99.9, 99.99, 99.999, 99.9999, 99.99999, 100.0}
-		histwriter.WriteDistributionFile(h, pctls, 1.0/1000000.0, HistFile+".histogram")
-	}
+		log.Printf("HDR Percentiles:\n")
+		for _, percentile := range percentiles {
+			log.Printf("%.4f:       %v\n", percentile, fmtDur(time.Duration(h.ValueAtQuantile(percentile))))
+		}
+		log.Println("==============================")
 
-	// Print results
-	log.Printf("Actual Msgs/Sec: %d\n", rps(NumPubs, pubDur))
-	log.Printf("Actual Band/Sec: %v\n", byteSize(rps(NumPubs, pubDur)*MsgSize*2))
-	log.Printf("Minimum Latency: %v", fmtDur(durations[0]))
-	log.Printf("Median Latency : %v", fmtDur(getMedian(durations)))
-	log.Printf("Maximum Latency: %v", fmtDur(durations[len(durations)-1]))
-	log.Printf("1st Sent Wall Time : %v", fmtDur(pubStart.Sub(start)))
-	log.Printf("Last Sent Wall Time: %v", fmtDur(pubDur))
-	log.Printf("Last Recv Wall Time: %v", fmtDur(subDur))
+		if HistFile != "" {
+			pctls := histwriter.Percentiles{10, 25, 50, 75, 90, 99, 99.9, 99.99, 99.999, 99.9999, 99.99999, 100.0}
+			histwriter.WriteDistributionFile(h, pctls, 1.0/1000000.0, HistFile+".histogram")
+		}
+
+		// Print results
+		log.Printf("Actual Msgs/Sec: %d\n", rps(NumPubs, pubDur))
+		log.Printf("Actual Band/Sec: %v\n", byteSize(rps(NumPubs, pubDur)*MsgSize*2))
+		log.Printf("Minimum Latency: %v", fmtDur(durations[0]))
+		log.Printf("Median Latency : %v", fmtDur(getMedian(durations)))
+		log.Printf("Maximum Latency: %v", fmtDur(durations[len(durations)-1]))
+		log.Printf("1st Sent Wall Time : %v", fmtDur(pubStart.Sub(start)))
+		log.Printf("Last Sent Wall Time: %v", fmtDur(pubDur))
+		log.Printf("Last Recv Wall Time: %v", fmtDur(subDur))
+	}()
+
+	http.HandleFunc("/latency_stats", func(w http.ResponseWriter, r *http.Request) {
+		data, _ := json.Marshal(lastMetrics)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(data)
+	})
+
+	log.Fatal(http.ListenAndServe(":" + Port, nil))
 }
 
 const fsecs = float64(time.Second)
@@ -318,4 +383,14 @@ func writeRawFile(filePath string, values []time.Duration) error {
 		fmt.Fprintf(f, "%f\n", float64(value.Nanoseconds())/1000000.0)
 	}
 	return nil
+}
+
+// averageLatency calculates the average of a list of recorded latency
+// measurements
+func averageLatency(values []time.Duration) float64 {
+        sum := 0.0
+        for _, value := range values {
+	        sum += float64(value.Nanoseconds())/1000.0
+	}
+	return sum / float64(len(values))
 }
