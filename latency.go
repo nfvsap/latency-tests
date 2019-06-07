@@ -16,6 +16,8 @@ import (
 	"time"
 	"net/http"
 	"encoding/json"
+	"strconv"
+	"os/exec"
 
 	"github.com/codahale/hdrhistogram"
 	"github.com/nats-io/go-nats"
@@ -36,6 +38,10 @@ var (
 	TLSkey        string
 	TLScert       string
 	Port          string
+	Subjects      int
+	Publicers     string
+	Subscribers   string
+	MsgSizeBench  string
 )
 
 var usageStr = `
@@ -53,6 +59,7 @@ Test Options:
     -tls_key <file>  TLS Private Key
     -tls_cert <file> TLS Certificate
     -port <int>      API port (default: 9080)
+    -subjects <int>  Number of subjects (default: 25)
 `
 
 func usage() {
@@ -110,6 +117,10 @@ func main() {
 	flag.StringVar(&TLScert, "tls_cert", "", "Certificate file")
 	flag.StringVar(&TLSca, "tls_ca", "", "Certificate CA file")
 	flag.StringVar(&Port, "port", "9080", "API Port")
+	flag.IntVar(&Subjects, "subjects", 25, "Number of subjects")
+	flag.StringVar(&Publicers, "publicers", "10", "Number of publicers")
+	flag.StringVar(&Subscribers, "subscribers", "10", "Number of subscribers")
+	flag.StringVar(&MsgSizeBench, "msBench", "8", "Message Payload Size for nats-benchmark")
 
 	log.SetFlags(0)
 	flag.Usage = usage
@@ -204,7 +215,7 @@ func main() {
 	percentiles := []float64{10, 50, 75, 90, 99, 99.99, 99.999, 99.9999, 99.99999, 100.0}
 
 	// Set ticker to print histogram dynamically
-	ticker := time.NewTicker(2000 * time.Millisecond)
+	ticker := time.NewTicker(3000 * time.Millisecond)
 	stop := make(chan bool, 1)
 	go func() {
 		for {
@@ -230,10 +241,10 @@ func main() {
 				log.Printf("HDR Percentiles:\n")
 
 				for _, percentile := range percentiles {
-					lastMetrics["Percentile" + fmt.Sprintf("%.4f", percentile)] = float64(time.Duration(h.ValueAtQuantile(percentile)).Nanoseconds())/1000.0
-					log.Printf("%.4f:       %v\n", percentile, fmtDur(time.Duration(h.ValueAtQuantile(percentile))))
+					lastMetrics["Percentile" + fmt.Sprintf("%.5f", percentile)] = float64(time.Duration(h.ValueAtQuantile(percentile)).Nanoseconds())/1000000.0
+					log.Printf("%.5f:       %v\n", percentile, fmtDur(time.Duration(h.ValueAtQuantile(percentile))))
 				}
-				log.Printf("AverageLatency: %v\n\n", avg_latency)
+				log.Printf("AverageLatency: %v ms\n\n", avg_latency)
 				log.Println("==============================")
 
 			case <-stop:
@@ -263,6 +274,16 @@ func main() {
 			delay = 0
 		}
 		time.Sleep(delay)
+	}
+
+	for i := 0; i < Subjects; i++ {
+		topic := "foo" + strconv.Itoa(i)
+		go func() {
+			cmd := exec.Command("../../../../bin/nats-bench", "-np", Publicers, "-ns", Subscribers, "-n", "10000000000000", "-ms", MsgSizeBench, topic)
+			log.Printf("Running nats-bench and waiting for it to finish... ")
+			err := cmd.Run()
+			log.Printf("Command finished with error: %v", err)
+		}()
 	}
 
 	go func() {
@@ -386,11 +407,11 @@ func writeRawFile(filePath string, values []time.Duration) error {
 }
 
 // averageLatency calculates the average of a list of recorded latency
-// measurements
+// measurements in msec
 func averageLatency(values []time.Duration) float64 {
         sum := 0.0
         for _, value := range values {
-	        sum += float64(value.Nanoseconds())/1000.0
+	        sum += float64(value.Nanoseconds())/1000000.0
 	}
 	return sum / float64(len(values))
 }
