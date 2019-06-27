@@ -240,16 +240,16 @@ func main() {
 				latestDurations = make([]time.Duration, 0, NumPubs)
 
 				fmt.Fprintf(f, "AverageLatency %v\n", avg_latency)
-				fmt.Fprintf(f, "Percentile10 %v\n", float64(time.Duration(h.ValueAtQuantile(10)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile50 %v\n", float64(time.Duration(h.ValueAtQuantile(50)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile75 %v\n", float64(time.Duration(h.ValueAtQuantile(75)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile90 %v\n", float64(time.Duration(h.ValueAtQuantile(90)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile99 %v\n", float64(time.Duration(h.ValueAtQuantile(99)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile99.99 %v\n", float64(time.Duration(h.ValueAtQuantile(99.99)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile99.999 %v\n", float64(time.Duration(h.ValueAtQuantile(99.999)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile99.9999 %v\n", float64(time.Duration(h.ValueAtQuantile(99.9999)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile99.99999 %v\n", float64(time.Duration(h.ValueAtQuantile(99.99999)).Nanoseconds())/1000.0)
-				fmt.Fprintf(f, "Percentile100.0 %v\n", float64(time.Duration(h.ValueAtQuantile(100.0)).Nanoseconds())/1000.0)
+				fmt.Fprintf(f, "Percentile10 %v\n", float64(time.Duration(h.ValueAtQuantile(10)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile50 %v\n", float64(time.Duration(h.ValueAtQuantile(50)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile75 %v\n", float64(time.Duration(h.ValueAtQuantile(75)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile90 %v\n", float64(time.Duration(h.ValueAtQuantile(90)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile99 %v\n", float64(time.Duration(h.ValueAtQuantile(99)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile99.99 %v\n", float64(time.Duration(h.ValueAtQuantile(99.99)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile99.999 %v\n", float64(time.Duration(h.ValueAtQuantile(99.999)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile99.9999 %v\n", float64(time.Duration(h.ValueAtQuantile(99.9999)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile99.99999 %v\n", float64(time.Duration(h.ValueAtQuantile(99.99999)).Nanoseconds())/1000000.0)
+				fmt.Fprintf(f, "Percentile100.0 %v\n", float64(time.Duration(h.ValueAtQuantile(100.0)).Nanoseconds())/1000000.0)
 				f.Close()
 
 				log.Printf("HDR Percentiles:\n")
@@ -425,11 +425,11 @@ func writeRawFile(filePath string, values []time.Duration) error {
 }
 
 // averageLatency calculates the average of a list of recorded latency
-// measurements
+// measurements in msec
 func averageLatency(values []time.Duration) float64 {
 	sum := 0.0
 	for _, value := range values {
-		sum += float64(value.Nanoseconds())/1000.0
+		sum += float64(value.Nanoseconds())/1000000.0
 	}
 	return sum / float64(len(values))
 }
