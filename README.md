@@ -1,3 +1,22 @@
+### Installing Benchamrk Services
+`cd installation_scripts`
+
+1) Use targets of Makefile to install the target services
+
+ie: `make install_nats_streamer`
+
+2) Use targets of Makefile to run the services
+
+ie: `make NATS_STREAMER_PORT=4224 run_nats_streamer`
+
+
+
+### Running the load generators
+
+TBA
+
+
+
 # NATS Latency and Throughput Test Framework
 
 ### Install
