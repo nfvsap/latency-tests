@@ -70,5 +70,5 @@ sudo systemctl restart nginx
 curl http://0.0.0.0
 
 
-(cd /var/www/html/ && sudo dd if=/dev/zero of=1kb.bin bs=1KB count=1)
-curl http://0.0.0.0/1kb.bin
+(cd /var/www/html/ && sudo dd if=/dev/zero of=100kb.bin bs=100KB count=1)
+curl http://0.0.0.0/100kb.bin
